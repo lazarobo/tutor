@@ -1,0 +1,205 @@
+#Include "TOTVS.CH"
+#Include "TOPCONN.CH"
+#Include "FILEIO.CH"
+#include "tbiconn.ch"
+
+/*/{Protheus.doc} U_SXJSON64DIR
+Gera SX2.json e SX3.json via banco, deixa o usuario escolher o diretorio
+de destino com TFileDialog, salva os dois arquivos nesse diretorio
+e retorna os respectivos base64.
+
+Exemplo:
+    Local oRet := U_SXJSON64DIR("99", "01")
+    If oRet["success"]
+        ConOut(oRet["sx2_base64"])
+        ConOut(oRet["sx3_base64"])
+    EndIf
+/*/
+User Function SXJSON64DIR(cEmpresa, cFil)
+	Local oRet         := JsonObject():New()
+	Local cDirCli      := ""
+	Local cDirSrv      := "\spool\sxjson\"
+	Local cArqSrvSX2   := ""
+	Local cArqSrvSX3   := ""
+	Local cJsonSX2     := ""
+	Local cJsonSX3     := ""
+	Local lOkSX2       := .F.
+	Local lOkSX3       := .F.
+	Local lPreparedEnv := .F.
+
+	Default cEmpresa := ""
+	Default cFil  := ""
+
+	If !Empty(cEmpresa) .And. !Empty(cFil)
+		PREPARE ENVIRONMENT EMPRESA cEmpresa FILIAL cFil
+		lPreparedEnv := .T.
+	EndIf
+
+	cDirCli := TFileDialog( "All files | *.*", ;
+		"Selecione o diretorio para salvar SX2/SX3", ;
+		0, ;
+		GetTempPath(), ;
+		.F., ;
+		GETF_RETDIRECTORY )
+
+	If Empty(cDirCli)
+		oRet["success"] := .F.
+		oRet["message"] := "Operacao cancelada pelo usuario."
+
+		If lPreparedEnv
+			RESET ENVIRONMENT
+		EndIf
+
+		Return oRet
+	EndIf
+
+	FWMakeDir(cDirSrv)
+
+	cArqSrvSX2 := _JoinPath(cDirSrv, "SX2.json")
+	cArqSrvSX3 := _JoinPath(cDirSrv, "SX3.json")
+
+	cJsonSX2 := _BuildSX2Json()
+	cJsonSX3 := _BuildSX3Json()
+
+	MemoWrite(cArqSrvSX2, cJsonSX2)
+	MemoWrite(cArqSrvSX3, cJsonSX3)
+
+	lOkSX2 := CpyS2T(cArqSrvSX2, cDirCli)
+	lOkSX3 := CpyS2T(cArqSrvSX3, cDirCli)
+
+	oRet["success"]         := (lOkSX2 .And. lOkSX3)
+	oRet["target_dir"]      := cDirCli
+	oRet["sx2_client_file"] := _JoinPath(cDirCli, "SX2.json")
+	oRet["sx3_client_file"] := _JoinPath(cDirCli, "SX3.json")
+	oRet["sx2_base64"]      := Encode64(, cArqSrvSX2, .F., .F.)
+	oRet["sx3_base64"]      := Encode64(, cArqSrvSX3, .F., .F.)
+	oRet["sx2_json"]        := cJsonSX2
+	oRet["sx3_json"]        := cJsonSX3
+
+	If !oRet["success"]
+		oRet["message"] := "Falha ao copiar um ou ambos os arquivos para o diretorio selecionado."
+	Else
+		oRet["message"] := "Arquivos gerados com sucesso."
+	EndIf
+
+	FErase(cArqSrvSX2)
+	FErase(cArqSrvSX3)
+
+	If lPreparedEnv
+		RESET ENVIRONMENT
+	EndIf
+
+Return oRet
+
+Static Function _BuildSX2Json()
+	Local cAlias := GetNextAlias()
+	Local cQuery := ""
+	Local oJson  := JsonObject():New()
+	Local oItem  := Nil
+
+	oJson["items"] := {}
+
+	cQuery += " SELECT "
+	cQuery += "     X2_CHAVE, "
+	cQuery += "     X2_ARQUIVO, "
+	cQuery += "     X2_NOME, "
+	cQuery += "     X2_MODULO "
+	cQuery += " FROM " + RetSqlName("SX2") + " SX2 "
+	cQuery += " WHERE SX2.D_E_L_E_T_ = ' ' "
+	cQuery += " ORDER BY SX2.X2_CHAVE, SX2.X2_ARQUIVO "
+
+	cQuery := ChangeQuery(cQuery)
+
+	DbUseArea(.T., "TOPCONN", TcGenQry(,, cQuery), cAlias, .T., .F.)
+
+	While !(cAlias)->(EoF())
+		oItem := JsonObject():New()
+		oItem["x2_chave"]   := _ToChar((cAlias)->X2_CHAVE)
+		oItem["x2_arquivo"] := _ToChar((cAlias)->X2_ARQUIVO)
+		oItem["x2_nome"]    := _ToChar((cAlias)->X2_NOME)
+		oItem["x2_modulo"]  := _ToNum((cAlias)->X2_MODULO)
+
+		AAdd(oJson["items"], oItem)
+
+		(cAlias)->(DbSkip())
+	EndDo
+
+	(cAlias)->(DbCloseArea())
+
+Return oJson:ToJson()
+
+Static Function _BuildSX3Json()
+	Local cAlias := GetNextAlias()
+	Local cQuery := ""
+	Local oJson  := JsonObject():New()
+	Local oItem  := Nil
+
+	oJson["items"] := {}
+
+	cQuery += " SELECT "
+	cQuery += "     X3_ARQUIVO, "
+	cQuery += "     X3_CAMPO, "
+	cQuery += "     X3_TIPO, "
+	cQuery += "     X3_TAMANHO, "
+	cQuery += "     X3_DECIMAL, "
+	cQuery += "     X3_TITULO "
+	cQuery += " FROM " + RetSqlName("SX3") + " SX3 "
+	cQuery += " WHERE SX3.D_E_L_E_T_ = ' ' "
+	cQuery += " ORDER BY SX3.X3_ARQUIVO, SX3.X3_CAMPO "
+
+	cQuery := ChangeQuery(cQuery)
+
+	DbUseArea(.T., "TOPCONN", TcGenQry(,, cQuery), cAlias, .T., .F.)
+
+	While !(cAlias)->(EoF())
+		oItem := JsonObject():New()
+		oItem["x3_arquivo"] := _ToChar((cAlias)->X3_ARQUIVO)
+		oItem["x3_campo"]   := _ToChar((cAlias)->X3_CAMPO)
+		oItem["x3_tipo"]    := _ToChar((cAlias)->X3_TIPO)
+		oItem["x3_tamanho"] := _ToNum((cAlias)->X3_TAMANHO)
+		oItem["x3_decimal"] := _ToNum((cAlias)->X3_DECIMAL)
+		oItem["x3_titulo"]  := _ToChar((cAlias)->X3_TITULO)
+
+		AAdd(oJson["items"], oItem)
+
+		(cAlias)->(DbSkip())
+	EndDo
+
+	(cAlias)->(DbCloseArea())
+
+Return oJson:ToJson()
+
+Static Function _ToChar(xValor)
+	Do Case
+	Case ValType(xValor) == "C"
+		Return AllTrim(xValor)
+	Case ValType(xValor) == "N"
+		Return AllTrim(Str(xValor))
+	Case ValType(xValor) == "D"
+		Return DToS(xValor)
+	EndCase
+
+Return ""
+
+Static Function _ToNum(xValor)
+	Do Case
+	Case ValType(xValor) == "N"
+		Return xValor
+	Case ValType(xValor) == "C"
+		Return Val(AllTrim(xValor))
+	EndCase
+
+Return 0
+
+Static Function _JoinPath(cDir, cFile)
+	Local cSep := "\"
+
+	If "/" $ cDir .And. !("\" $ cDir)
+		cSep := "/"
+	EndIf
+
+	If Right(AllTrim(cDir), 1) $ "\/"
+		Return AllTrim(cDir) + cFile
+	EndIf
+
+Return AllTrim(cDir) + cSep + cFile
